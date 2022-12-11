@@ -1,6 +1,6 @@
 # go-notes
 notes for learning English
 
-# golang
-[channel](./channel/channel.md)
-[lock](./lock/lock.md)
+- [GC](./base/GC.md)
+- [channel](./channel/channel.md)
+- [lock](./lock/lock.md)
