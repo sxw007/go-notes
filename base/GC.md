@@ -190,11 +190,22 @@ func morestack_noctxt()
 
 #### heapArena
 
-- Go 每次申请的虚拟内存单元为64MB（以heapArena为单元申请，一次64MB，释放也是一次64MB）
+- 在64位操作系统中(win除外) Go 每次申请的虚拟内存单元为64MB（以heapArena为单元申请，一次64MB，释放也是一次64MB）
 - 最多有4,194,304个虚拟内存单元（2^20，刚好可以占满256TB）
 - 所有的heapArena组成了mheap（Go堆内存）
 
 ![stack demo](./images/1_1_6.png)
+
+> go heap 会按照arena的大小增长，每次预留arena大小整数倍的虚拟地址空间。arena的大小与平台相关，除了windows，其他系统64位的平台下arena的大小都是64M。在32位的平台中，为了使go heap比较连续，没有碎片，当程序启动的时候就会先预留一大块虚拟地址空间，如果这些空间都被用完了，才会每次按照arena大小整数倍去预留虚拟地址空间。
+
+```
+       Platform  Addr bits  Arena size  L1 entries   L2 entries
+ --------------  ---------  ----------  ----------  -----------
+       */64-bit         48        64MB           1    4M (32MB)
+ windows/64-bit         48         4MB          64    1M  (8MB)
+       */32-bit         32         4MB           1  1024  (4KB)
+     */mips(le)         31         4MB           1   512  (2KB)
+```
 
 ./src/runtime/mheap.go:229
 ```go
@@ -207,9 +218,10 @@ type mheap struct {
 }
 
 // 229行，这个结构体描述了一个64MB的内存单元（不是一个结构体64MB），记录向操作系统申请64MB虚拟内存的信息
+// bitmap、pageMarks、pageSpecials都与GC有关
 type heapArena struct {
-    bitmap [heapArenaBitmapBytes]byte
-    spans [pagesPerArena]*mspan
+    bitmap [heapArenaBitmapBytes]byte // 用于记录这个arena中有哪些位置有指针
+    spans [pagesPerArena]*mspan  // 内存管理单元
     pageInUse [pagesPerArena / 8]uint8
     pageMarks [pagesPerArena / 8]uint8
     pageSpecials [pagesPerArena / 8]uint8
@@ -217,6 +229,53 @@ type heapArena struct {
     zeroedBase uintptr
 }
 ```
+
+#### 内存管理单元
+
+##### 分级分配思想
+为了减少每个对象会放入可容纳该对象的最小的区域内
+![stack demo](./images/1_1_7.png)
+
+##### mspan
+
+``上面所述的“级”就是 “内存管理单元 mspan”``
+
+- 根据隔离适应策略，使用内存时的最小单位为mspan
+- 每个mspan为N个大小相同的“格子”
+- Go中一共有67种mspan
+
+> 源码详情：./src/runtime/sizeclasses.go
+
+```
+   级别    对象大小  格子的大小   对象数  页面尾部浪费   最大浪费
+ class  bytes/obj  bytes/span  objects  tail waste  max waste
+     1          8        8192     1024           0     87.50%
+     2         16        8192      512           0     43.75%
+     3         32        8192      256           0     46.88%
+    ...
+    10        128        8192       64           0     11.72%
+    11        144        8192       56         128     11.82%
+    ...
+    37       1792       16384        9         256     15.57%
+    38       2048        8192        4           0     12.45%
+    39       2304       16384        7         256     12.46%
+    ...
+    66      28672       57344        2           0      4.91%
+    67      32768       32768        1           0     12.50%
+```
+> 因为mspan管理内存的最小单位是页面，而页面的大小不一定是size class大小的倍数，这会导致一些内存被浪费
+> 
+> 例如下图中一个mspan划分成若干个slot用于分配，但是mspan占用页面的大小不能被slot的大小整除，所以有一个tail waste
+
+![stack demo](./images/1_1_8.png)
+
+> mspan：./src/runtime/mheap.go:384
+
+#### 中心索引 mcentral
+
+- 136个mcentral结构体
+  - 68个组需要GC扫描的mspan（堆中的对象）
+  - 68个组不需要GC扫描的mspan（常量）
 
 
 
