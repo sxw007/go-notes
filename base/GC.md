@@ -210,7 +210,7 @@ func morestack_noctxt()
 ./src/runtime/mheap.go:229
 ```go
 // 62行，mheap
-type mheap struct {
+type mheap struct { // 这个就是golang的堆内存
 	// ...
 	// ↓ ↓ ↓ ↓ 157行 ↓ ↓ ↓ ↓
     arenas [1 << arenaL1Bits]*[1 << arenaL2Bits]*heapArena // 记录向操作系统申请的所有内存单元
@@ -242,8 +242,9 @@ type heapArena struct {
 
 - 根据隔离适应策略，使用内存时的最小单位为mspan
 - 每个mspan为N个大小相同的“格子”
-- Go中一共有67种mspan
+- Go中一共有67种mspan，根据需求创建不同级别的mspan
 
+> class 0 比较特别
 > 源码详情：./src/runtime/sizeclasses.go
 
 ```
@@ -271,13 +272,115 @@ type heapArena struct {
 
 > mspan：./src/runtime/mheap.go:384
 
+```go
+// 很明显是一个链表
+type mspan struct {
+  next *mspan // next span in list, or nil if none
+  prev *mspan // previous span in list, or nil if none
+  list *mSpanList // For debugging. TODO: Remove.
+}
+```
+
+``每个heapArena中的mspan都不确定，如何快速找到所需的mspan级别？``
+
+
+
 #### 中心索引 mcentral
 
 - 136个mcentral结构体
   - 68个组需要GC扫描的mspan（堆中的对象）
   - 68个组不需要GC扫描的mspan（常量）
+- mcentral 就是个链表头，保存了同样级别的所有mspan
+
+![stack demo](./images/1_1_9.png)
+
+
+##### 代码
+
+
+
+> ./src/runtime/mheap.go:207
+
+```go
+type mheap struct {
+    // ...
+	// ↓ ↓ ↓ ↓ 207行 ↓ ↓ ↓ ↓
+    central [numSpanClasses]struct { // numSpanClasses = 68 << 1 = 136
+        mcentral mcentral
+        pad      [cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize]byte
+    }
+    // ...
+}
+```
+
+> ./src/runtime/mcentral.go:20
+```go
+type mcentral struct {
+	spanclass spanClass // uint8 隔离级别
+	partial [2]spanSet // 空闲的
+	full    [2]spanSet // 已满的
+    // A spanSet is a set of *mspans.
+}
+```
+
+#### 线程缓存 mcache
+
+- mcentral 实际是中心索引，使用互斥锁保护
+  - mcentral.go:119的cacheSpan()方法里调用了tryAcquire(s)方法，底层是通过atomic加锁实现
+  - 在高并并发场景下，锁竞争问题严重？
+- 参考协程GMP模型（P的本地队列），增加线程本地缓存
+  - 不需要全局的协程列表获取线程，在本地就可以获取
+  - 线程缓存mcache
+    - 每个P拥有一个mcache
+    - 一个mcache拥有136个mspan
+      - mcentral中每种（级别、GC扫描类型）span取一个组成mcache分配给线程
+      - 68个需要GC扫描的mspan
+      - 68个不需要GC扫描的mspan
+
+![stack demo](./images/1_1_10.png)
+
+> ./src/runtime/runtime2.go:614行可以看到P中的mcache
+
+```go
+type p struct {
+	// ...
+    mcache      *mcache // 在线程执行的时候需分配内存（变量、常量等）就直接往这里写，写满后会进行全局交换
+	// ...
+}
+```
+
+> ./src/runtime/mcache.go:44 可以看到mcache中有136个span
+
+```go
+type mcache struct {
+  nextSample uintptr
+  scanAlloc  uintptr
+  tiny       uintptr
+  tinyoffset uintptr
+  tinyAllocs uintptr
+  alloc [numSpanClasses]*mspan  // numSpanClasses = 68 << 1 = 136
+  stackcache [_NumStackOrders]stackfreelist
+  flushGen uint32
+}
+```
+
+#### 总结
+
+- Go模仿TCmalloc，建立了自己的堆内存架构（c++用的,google开发go的时候直接拿过来了）
+- 使用heapArena向操作系统申请内存
+- 使用heapArena时，以mspan为单位（有一堆），防止碎片化
+- mcentral是mspan们的中心索引（不用遍历heapArena，遍历mcentral即可，都分好类了，但是会有锁的并发问题）
+- mcache记录了分配给每个P的本地mspan
+
+
+### 堆内存分配
 
 
 
 
 ## 垃圾回收（GC）
+
+
+## 总结
+
+- heapArena是在Go的堆之外分配和管理的
