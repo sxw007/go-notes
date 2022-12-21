@@ -22,15 +22,18 @@
 ```
 
 - 协程的执行路径（do1() → do2()）
+
 - 局部变量（方法内部声明的变量会记录在协程栈中）
+
 - 函数传参（方法间的参数传递，例如do2()需要一个入参，do1()是通过栈内存把参数传递给do2()）
+
 - 函数返回值（do2()有返回值给do1()，用的也是栈内存传递）
 
 - 栈内存（协程栈、调用栈）
+
 - 堆内存
+
 - 垃圾回收
-
-
 
 ### 位置
 
@@ -38,13 +41,12 @@
   - 通过GC来释放
 - Go堆内存位于操作系统虚拟内存上（操作系统会给每个进程分配一块虚拟内存）
 
-
 ### 结构
 
-
 ```shell
-go build -gcflags -S stack0.go
+go run -gcflags -S stack.go
 ```
+
 ```go
 package main
 
@@ -75,10 +77,9 @@ func main()  {
     - 传递结构体时：会拷贝结构体中的全部内容
     - 传递结构体指针时：会拷贝结构体指针
 
-
 ### 思考
 
->初始大小2~4k
+> 初始大小2~4k
 
 - 协程栈不够大怎么办？
   - 局部变量太大
@@ -100,13 +101,13 @@ func main()  {
 package main
 
 func a() *int {
-	v := 0 // 若回收a()的所有栈帧回收，此处就会变为空指针，所以变量v不能放到栈上，而是放在堆上
-	return &v
+    v := 0 // 若回收a()的所有栈帧回收，此处就会变为空指针，所以变量v不能放到栈上，而是放在堆上
+    return &v
 }
 
 func main() {
-	i := a() // 返回的是变量v的指针
-	print(i)
+    i := a() // 返回的是变量v的指针
+    print(i)
 }
 ```
 
@@ -166,11 +167,11 @@ func main() {
 ![stack demo](./images/1_1_4.png)
 
 ./src/runtime/stubs.go:312 （使用汇编实现）
+
 ```go
 func morestack() // 以64位为例：./src/runtime/asm_amd64.s
 func morestack_noctxt()
 ```
-
 
 ## 堆内存
 
@@ -193,6 +194,7 @@ func morestack_noctxt()
 - 在64位操作系统中(win除外) Go 每次申请的虚拟内存单元为64MB（以heapArena为单元申请，一次64MB，释放也是一次64MB）
 - 最多有4,194,304个虚拟内存单元（2^20，刚好可以占满256TB）
 - 所有的heapArena组成了mheap（Go堆内存）
+- 当heapArena空间不足时，向操作系统申请新的heapArena
 
 ![stack demo](./images/1_1_6.png)
 
@@ -208,13 +210,14 @@ func morestack_noctxt()
 ```
 
 ./src/runtime/mheap.go:229
+
 ```go
 // 62行，mheap
 type mheap struct { // 这个就是golang的堆内存
-	// ...
-	// ↓ ↓ ↓ ↓ 157行 ↓ ↓ ↓ ↓
+    // ...
+    // ↓ ↓ ↓ ↓ 157行 ↓ ↓ ↓ ↓
     arenas [1 << arenaL1Bits]*[1 << arenaL2Bits]*heapArena // 记录向操作系统申请的所有内存单元
-	// ...
+    // ...
 }
 
 // 229行，这个结构体描述了一个64MB的内存单元（不是一个结构体64MB），记录向操作系统申请64MB虚拟内存的信息
@@ -233,6 +236,7 @@ type heapArena struct {
 #### 内存管理单元
 
 ##### 分级分配思想
+
 为了减少每个对象会放入可容纳该对象的最小的区域内
 ![stack demo](./images/1_1_7.png)
 
@@ -244,7 +248,7 @@ type heapArena struct {
 - 每个mspan为N个大小相同的“格子”
 - Go中一共有67种mspan，根据需求创建不同级别的mspan
 
-> class 0 比较特别
+> class 0 比较特别，没有固定大小
 > 源码详情：./src/runtime/sizeclasses.go
 
 ```
@@ -264,6 +268,7 @@ type heapArena struct {
     66      28672       57344        2           0      4.91%
     67      32768       32768        1           0     12.50%
 ```
+
 > 因为mspan管理内存的最小单位是页面，而页面的大小不一定是size class大小的倍数，这会导致一些内存被浪费
 > 
 > 例如下图中一个mspan划分成若干个slot用于分配，但是mspan占用页面的大小不能被slot的大小整除，所以有一个tail waste
@@ -283,8 +288,6 @@ type mspan struct {
 
 ``每个heapArena中的mspan都不确定，如何快速找到所需的mspan级别？``
 
-
-
 #### 中心索引 mcentral
 
 - 136个mcentral结构体
@@ -294,7 +297,6 @@ type mspan struct {
 
 ![stack demo](./images/1_1_9.png)
 
-
 ##### 代码
 
 > ./src/runtime/mheap.go:207
@@ -302,7 +304,7 @@ type mspan struct {
 ```go
 type mheap struct {
     // ...
-	// ↓ ↓ ↓ ↓ 207行 ↓ ↓ ↓ ↓
+    // ↓ ↓ ↓ ↓ 207行 ↓ ↓ ↓ ↓
     central [numSpanClasses]struct { // numSpanClasses = 68 << 1 = 136
         mcentral mcentral
         pad      [cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize]byte
@@ -312,12 +314,12 @@ type mheap struct {
 ```
 
 > ./src/runtime/mcentral.go:20
+
 ```go
 type mcentral struct {
-	spanclass spanClass // uint8 隔离级别
-	partial [2]spanSet // 空闲的
-	full    [2]spanSet // 已满的
-    // A spanSet is a set of *mspans.
+    spanclass spanClass // uint8 隔离级别
+    partial [2]spanSet // 空闲的   A spanSet is a set of *mspans.
+    full    [2]spanSet // 已满的
 }
 ```
 
@@ -341,9 +343,9 @@ type mcentral struct {
 
 ```go
 type p struct {
-	// ...
+    // ...
     mcache      *mcache // 在线程执行的时候需分配内存（变量、常量等）就直接往这里写，写满后会进行全局交换
-	// ...
+    // ...
 }
 ```
 
@@ -370,15 +372,205 @@ type mcache struct {
 - mcentral是mspan们的中心索引（不用遍历heapArena，遍历mcentral即可，都分好类了，但是会有锁的并发问题）
 - mcache记录了分配给每个P的本地mspan
 
-
 ### 堆内存分配
 
+#### 对象级别
 
+> 微、小对象分配至普通 mspan（class 1~67）
+> 大对象量身定制 mspan （class 0 无固定大小）
 
+- Tiny微对象 (0,16B) 无指针
+- Small小对象 \[16B,32KB]
+- Large 大对象 (32KB,+∞)
+
+#### 微对象分配
+
+> 从mcache拿到2级mspan，将多个微对象合并成一个16Bytes存入
+
+![stack demo](./images/1_1_11.png)
+
+---
+
+##### 代码
+
+> ./src/runtime/malloc.go:903
+
+``可以推论 class 1 的 span 在当前Go版本用不到``
+
+```go
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+    // ...
+    // ↓ ↓ ↓ ↓ ↓ 991行 ↓ ↓ ↓ ↓ ↓
+    if size <= maxSmallSize { // 先判断是否是微、小对象（小于32KB）
+        if noscan && size < maxTinySize { // 判断是否是微对象（小于16B）
+            // 注释1001行注释说明是组合成一个16B (bytes)
+            off := c.tinyoffset
+            if size&7 == 0 {
+                off = alignUp(off, 8)
+            } else if sys.PtrSize == 4 && size == 12 {
+                off = alignUp(off, 8)
+            } else if size&3 == 0 {
+                off = alignUp(off, 4)
+            } else if size&1 == 0 {
+                off = alignUp(off, 2)
+            }
+            if off+size <= maxTinySize && c.tiny != 0 {
+                x = unsafe.Pointer(c.tiny + off)
+                c.tinyoffset = off + size
+                c.tinyAllocs++
+                mp.mallocing = 0
+                releasem(mp)
+                return x
+            }
+            span = c.alloc[tinySpanClass] // 这里拿的是 class 2 的 span
+            v := nextFreeFast(span)
+            if v == 0 {
+                v, span, shouldhelpgc = c.nextFree(tinySpanClass)
+            }
+            x = unsafe.Pointer(v)
+            (*[2]uint64)(x)[0] = 0
+            (*[2]uint64)(x)[1] = 0
+            if !raceenabled && (size < c.tinyoffset || c.tiny == 0) {
+                c.tiny = uintptr(x)
+                c.tinyoffset = size
+            }
+            size = maxTinySize
+        } else { // 这里是小对象（16B~32KB）
+            var sizeclass uint8
+            // 通过查表确定使用几级的span
+            if size <= smallSizeMax-8 {
+                sizeclass = size_to_class8[divRoundUp(size, smallSizeDiv)]
+            } else {
+                sizeclass = size_to_class128[divRoundUp(size-smallSizeMax, largeSizeDiv)]
+            }
+            size = uintptr(class_to_size[sizeclass])
+            spc := makeSpanClass(sizeclass, noscan)
+            span = c.alloc[spc]
+            v := nextFreeFast(span) // 找到没被占用的span中的小格子（obj）
+            if v == 0 {
+                v, span, shouldhelpgc = c.nextFree(spc) // 若没找到，则进行mcache替换
+            }
+            x = unsafe.Pointer(v)
+            if needzero && span.needzero != 0 {
+                memclrNoHeapPointers(unsafe.Pointer(v), size)
+            }
+        }
+    } else {
+        shouldhelpgc = true
+        span, isZeroed = c.allocLarge(size, needzero && !noscan, noscan)
+        span.freeindex = 1
+        span.allocCount = 1
+        x = unsafe.Pointer(span.base())
+        size = span.elemsize
+    }
+    // ...
+}
+```
+
+---
+
+> ./src/runtime/malloc.go:876
+
+```go
+func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
+    s = c.alloc[spc]
+    shouldhelpgc = false
+    freeIndex := s.nextFreeIndex()
+    if freeIndex == s.nelems {
+        // The span is full.
+        if uintptr(s.allocCount) != s.nelems {
+            println("runtime: s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
+            throw("s.allocCount != s.nelems && freeIndex == s.nelems")
+        }
+        c.refill(spc) // 在这里进行mcache替换
+        shouldhelpgc = true
+        s = c.alloc[spc]
+
+        freeIndex = s.nextFreeIndex()
+    }
+
+    if freeIndex >= s.nelems {
+        throw("freeIndex is not valid")
+    }
+
+    v = gclinkptr(freeIndex*s.elemsize + s.base())
+    s.allocCount++
+    if uintptr(s.allocCount) > s.nelems {
+        println("s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
+        throw("s.allocCount > s.nelems")
+    }
+    return
+}
+```
+
+---
+
+> ./src/runtime/mcache.go:146
+
+```go
+func (c *mcache) refill(spc spanClass) {
+    s := c.alloc[spc]
+    if uintptr(s.allocCount) != s.nelems {
+        throw("refill of span with free space remaining")
+    }
+    if s != &emptymspan {
+    // Mark this span as no longer cached.
+        if s.sweepgen != mheap_.sweepgen+3 {
+            throw("bad sweepgen in refill")
+        }
+        mheap_.central[spc].mcentral.uncacheSpan(s) // 卸载mcache
+    }
+    // Get a new cached span from the central lists.
+    s = mheap_.central[spc].mcentral.cacheSpan() // 从中心索引装载mcache
+    if s == nil {
+        throw("out of memory")
+    }
+    // ...
+}
+```
+
+##### mchache的替换
+
+- mcache中，每个级别的mspan（根据隔离级别表格，有不同的对象(格子)数）只有一个
+- 当mspan满了之后，会中mcentral中换一个新的
+- 若mcentral中所有的span都满了，会进行扩容
+  - mcentral中，只有有限数量的mspan
+  - 当mspan缺少时，会从虚拟内存中申请更多(最多2^20)的heapArena（64MB）开辟新的mspan
+
+#### 大对象分配
+
+- 直接从heapArena开辟0级mspan
+- 0级的mspan为大对象定制（可大可小）
+  - 67级最大的格子大小是32KB，
+
+##### 代码
+
+> ./src/runtime/malloc.go:903
+
+```go
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+    // ...
+    if size <= maxSmallSize {
+        // ...
+        // ↓ ↓ ↓ ↓ ↓ 1065行 ↓ ↓ ↓ ↓ ↓
+    } else { // 这里是大对象
+        shouldhelpgc = true
+        span, isZeroed = c.allocLarge(size, needzero && !noscan, noscan) // 在这里定制
+        span.freeindex = 1
+        span.allocCount = 1
+        x = unsafe.Pointer(span.base())
+        size = span.elemsize
+    }
+    // ...
+}
+```
+
+#### 总结
+
+- Go将对象分为3种，微(0,16B)、小\[16B,32KB]、大(32KB,+∞)
+- 微、小对象使用mcache
+  - mcache中的mspan装满后，与mcentral交换新的mcache（这里才有中心索引的锁竞争）
+  - mcentral不足时，在heapArena开辟新的mspan
+- 大对象直接在heapArena开辟新的mspan
 
 ## 垃圾回收（GC）
-
-
-## 总结
-
-- heapArena是在Go的堆之外分配和管理的
