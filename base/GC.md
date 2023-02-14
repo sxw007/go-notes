@@ -574,3 +574,220 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 - 大对象直接在heapArena开辟新的mspan
 
 ## 垃圾回收（GC）
+
+### 常见的几种算GC法
+
+#### 标记-清除（golang使用的方式）
+
+> 会有碎片的问题，但是golang使用了分级策略，所以影响不大
+
+![GC_alg_0](./images/1_1_12.png)
+
+#### 标记-整理
+
+> 改善碎片化，但GC开销大，会导致卡顿
+
+![GC_alg_1](./images/1_1_13.png)
+
+#### 复制
+
+> 会将当前有用的内存复制到新的区域中，再把旧的存储空间清理，该方法会导致内存浪费，但解决了碎片化的问题
+
+![GC_alg_2](./images/1_1_14.png)
+
+### golang GC
+
+- 因为Go堆内存结构的独特优势（分级span），选择最简单的“标记-清除”算法
+- 找到有引用的对象，剩下的就是没有引用的
+
+
+#### Root Set（GC Root）
+
+##### 被栈上的指针引用
+
+> 间接、直接使用都会生效
+```go
+package main
+
+type company struct {
+	name string
+	address string
+	boss *people
+}
+
+type people struct {
+	name string
+}
+
+func main()  {
+  p := &company{} # 这个 &company 被 变量p 引用，不会被清除，其中的 boss 是 *people，也不会被清除
+  print(p)
+}
+```
+##### 被全局变量指针引用
+
+> const 定义的变量不会被清除
+
+##### 被寄存器中的指针引用（CPU正在操作的指针）
+
+> CPU 正在操作的变量，不会被清除 
+
+#### 串行GC步骤（v1.3及之前，v1.4加入写屏障）
+
+- Stop The World， 暂停所有其他协程(性能影响大，STW的时间长短直接影响应用的执行)
+- 通过可达性分析，找到无用的堆内存
+- 释放堆内存
+- 恢复所有其他协程
+
+##### 可达性分析标记法
+
+> Root 节点进行广度优先算法（BFS）搜索,这种方法也叫可达性分析标记法
+
+![sign_0](./images/1_1_15_0.png)
+
+#### 并发GC（v1.5及之后 三色并发标记清除进行垃圾回收）
+
+> 并发的难点在于标记阶段
+
+##### 三色标记法
+
+- 黑色：有用，已经分析扫描
+- 灰色：有用，还未分析扫描
+- 白色：暂时无用，最后需要清除的对象
+
+1. 把所有的对象标记为白色
+
+   ![sign_0](./images/1_1_15_1.png)
+
+2. 把程序根结点集合RootSet里的对象标记为灰色
+
+   ![sign_1](./images/1_1_15_2.png)
+
+3. 遍历标记为灰色的对象，找到关联的对象并标记为灰色，同时把自己标记为黑色
+
+   ![sign_2](./images/1_1_15_3.png)
+
+4. 重复此步骤，直到只剩下 黑色 和 白色
+
+   ![sign_3](./images/1_1_15_4.png)
+
+##### Yuasa 删除屏障（解决并发删除）
+
+> 并发标记时，对指针释放的白色对象置灰
+
+##### Dijkstra 插入屏障（解决并发插入）
+
+> 并发标记时，对指针新指向的白色对象置灰
+
+
+#### GC历程
+
+![GC_history](./images/1_1_16.jpg)
+
+
+### 优化GC效率
+
+#### GC出发的时机
+
+##### 系统定时触发
+
+- sysmon 定时检查（Runtime 在启动程序的时候,会创建一个独立的M作为监控线程,称为sysmon,它是一个系统级的daemon线程）
+- 如果2分钟内没有过GC，触发
+- 谨慎调整（时间过长一次性需要处理的对象较多，导致卡顿）
+
+> ./src/runtime/proc.go:5125
+
+```go
+var forcegcperiod int64 = 2 * 60 * 1e9 // 强制GC周期
+```
+
+##### 用户显式触发
+
+- 调用 runtime.GC 方法
+- 不推荐调用（不确定时机是否合适）
+
+##### 申请内存时触发
+
+- 给对象申请堆空间时，可能导致GC（mallocgc方法）
+
+#### GC优化原则
+
+##### 尽量少在堆上产生垃圾
+
+###### 内存池化
+
+> 参考channel环线缓存
+
+- 缓存性质的对象
+- 频繁创建和删除
+- 使用内存池，不GC
+
+###### 减少逃逸
+
+> 参考前面的逃逸分析章节
+
+- 逃逸会使原本在栈上的对象进入堆中
+- 反射可能会导致逃逸（json、fmt包，取决于内容大小）
+- 方法返回了指针而不是拷贝
+
+###### 使用空结构体
+
+- 空结构体指向一个固定地址
+- 没有长度不占用内存空间
+- 比如channel传递空结构体
+  ```go
+  // 不关心内容，只需要传递信号
+  ch := make(chan struct{})
+  
+  ch <- struct{}{}
+  ```
+
+- 比如map不需要值的时候用hashSet，而不是hashMap
+  ```go
+  // HashSet
+  demo1 := make(map[string]struct{}) // 这里只关心键，一般用于判断键是否唯一
+  
+  // HashMap
+  demo2 := make(map[string]string) // key → value 的常规用法
+  ```
+
+##### GC分析工具
+
+- go tool pprof
+- go tool trace
+- go build -gcflags="-m"
+  - GODEBUG="gctrace=1" （简单粗暴）
+    - 1.设置环境变量
+      - windows
+        ```shell
+        $env:GODEBUG="gctrace=1"
+        ```
+      - linux/unix
+        ```shell
+        export GODEBUG="gctrace=1"
+        ```
+    - 2.运行程序
+      ```shell
+      go run gc.go
+      ```
+    - 3.查看控制台打印的GC情况
+      ```
+      gc 1 @0.010s 2%: 0+1.7+0 ms clock, 0+1.1/1.1/2.2+0 ms cpu, 4->5->5 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 8 P
+      gc 2 @0.013s 3%: 0+2.1+0 ms clock, 0+0/2.6/2.6+0 ms cpu, 14->14->14 MB, 11 MB goal, 0 MB stacks, 0 MB globals, 8 P
+      ```
+      - gc 1                  第1次GC
+      - @0.013s               程序启动到GC标记完成的时间
+      - 3%                    程序从启动到现在，GC标记工作的CPU使用占比（不超过10%）
+      - 0+2.1+0 ms clock      0表示mark阶段的STW时间（单P的）；2.1表示并发标记用的时间（所有P的）；0表示标记完成阶段的STW时间（单P的）
+      - 0+0/2.6/2.6+0 ms cpu  
+      - 14->14->14 MB         GC 开始、过程、结束的内存变化
+      - 11 MB goal            表示下一次触发GC的内存占用阀值是11MB
+      - 0 MB stacks
+      - 0 MB globals
+      - 8 P                   GMP模型中的P，线程数
+
+#### 总结
+
+- GC主要由系统定时触发或者生气内存触发
+- GC优化的原则是减少在堆上产生垃圾
+- 使用GC分析根据可以帮助分析GC问题
