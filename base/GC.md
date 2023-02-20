@@ -2,38 +2,33 @@
 
 ---
 
+初步的概念：
+
+> 1. golang的垃圾回收是针对堆的
+> 2. 栈（stack）：由操作系统自动分配释放，发生逃逸时会到堆内存中
+> 3. 堆（heap）：在golang中有自动的垃圾回收机制，在c/c++中则由程序员分配释放
+
 ## 栈内存（协程栈、调用栈）
 
-``堆上的栈，Go的协程栈位于堆内存上``
+> 堆上的栈，Go的协程栈位于堆内存上
 
 ### 作用
 
 <img title="" src="images/1_1_1.png" alt="stack" width="200">
 
 ```
-每个协程第一个栈帧为 goexit()
-
-每次调用其他函数会插入一个栈帧
-
 用户的main方法首先会开辟一个main.main的栈帧
+
+每个协程第一个栈帧为 goexit()，每次调用其他函数会插入一个栈帧
 
 栈帧首先记录栈基址（就是指从哪个方法调用进来的）方便返回的时候知道返回地址在哪
 开辟调用方法的返回值，return就是将返回值写回上一个栈帧预留的空间
 ```
 
 - 协程的执行路径（do1() → do2()）
-
 - 局部变量（方法内部声明的变量会记录在协程栈中）
-
 - 函数传参（方法间的参数传递，例如do2()需要一个入参，do1()是通过栈内存把参数传递给do2()）
-
 - 函数返回值（do2()有返回值给do1()，用的也是栈内存传递）
-
-- 栈内存（协程栈、调用栈）
-
-- 堆内存
-
-- 垃圾回收
 
 ### 位置
 
@@ -44,7 +39,10 @@
 ### 结构
 
 ```shell
-go run -gcflags -S stack.go
+# -m 进行内存分配分析
+# -l 避免程序内联
+# -S 打印汇编调用信息
+go run -gcflags="-m" stack_0.go
 ```
 
 ```go
@@ -79,11 +77,11 @@ func main()  {
 
 ### 思考
 
-> 初始大小2~4k
+> 栈初始大小2~4k
 
 - 协程栈不够大怎么办？
   - 局部变量太大
-  - 栈帧太多 
+  - 栈帧太多
 
 ---
 
@@ -101,7 +99,8 @@ func main()  {
 package main
 
 func a() *int {
-    v := 0 // 若回收a()的所有栈帧回收，此处就会变为空指针，所以变量v不能放到栈上，而是放在堆上
+    v := 0  // .\stack_0_1.go:4:2: moved to heap: v
+	// 若回收a()的所有栈帧回收，此处就会变为空指针，所以变量v不能放到栈上，而是放在堆上
     return &v
 }
 
@@ -111,10 +110,14 @@ func main() {
 }
 ```
 
+```shell
+go run -gcflags="-m" stack_0_1.go
+```
+
 ### 空接口逃逸
 
 > 如果函数的参数为 interface{}，函数的实参很可能会逃逸
-> 因为 interface{} 类型的函数往往会使用反射（反射要求对象是在堆上），未使用反射则不会逃逸
+> 因为 interface{} 类型的函数往往会使用反射（reflect对象要求是在堆上），未使用反射则不会逃逸
 
 ```go
 package main
@@ -123,7 +126,8 @@ import "fmt"
 
 func b() {
   i := 0 // 因为下面的 fmt.Println() 接收的是 interface{}，i会逃逸到堆上
-  fmt.Println(i) // func Println(a ...interface{}) (n int, err error) {...}
+  fmt.Println(i) // .\stack_1.go:7:13: i escapes to heap  （变量i逃逸到堆）
+  // func Println(a ...interface{}) (n int, err error) {...}
 }
 
 func main() {
@@ -131,10 +135,14 @@ func main() {
 }
 ```
 
+```shell
+go run -gcflags="-m" stack_0_2.go
+```
+
 ### 大变量逃逸
 
 - 过大的变量会导致栈空间不足
-- 64位机器中，一般没超过64KB的变量会逃逸
+- 64位机器中，一般超过64KB的变量会逃逸
 
 ### 栈扩容
 
@@ -147,21 +155,23 @@ func main() {
 #### 分段栈
 
 > 1.13之前使用
-> 
+>
 > 优点：没有空间浪费
-> 
+>
 > 缺点：栈指针会在不连续的空间跳转（影响性能）
 
 ![stack demo](./images/1_1_3.png)
 
 #### 连续栈
 
+> 1.14之后
+>
 > 优点：空间一直连续
-> 
+>
 > 缺点：伸缩时的开销大
-> 
+>
 > 当空间不足时扩容，变为原来的2倍（老的栈空间不足时，会找一块2倍大的栈空间并拷贝过去）
-> 
+>
 > 当空间使用率不足1/4时缩容，变为原来的1/2
 
 ![stack demo](./images/1_1_4.png)
@@ -237,12 +247,14 @@ type heapArena struct {
 
 ##### 分级分配思想
 
-为了减少每个对象会放入可容纳该对象的最小的区域内
+为了减少每个对象（值）会放入可容纳该对象的最小的区域内
 ![stack demo](./images/1_1_7.png)
 
 ##### mspan
 
 ``上面所述的“级”就是 “内存管理单元 mspan”``
+
+![stack demo](./images/1_1_7_1.png)
 
 - 根据隔离适应策略，使用内存时的最小单位为mspan
 - 每个mspan为N个大小相同的“格子”
@@ -256,7 +268,7 @@ type heapArena struct {
  class  bytes/obj  bytes/span  objects  tail waste  max waste
      1          8        8192     1024           0     87.50%
      2         16        8192      512           0     43.75%
-     3         32        8192      256           0     46.88%
+     3         24        8192      341           0     46.88%
     ...
     10        128        8192       64           0     11.72%
     11        144        8192       56         128     11.82%
@@ -270,7 +282,7 @@ type heapArena struct {
 ```
 
 > 因为mspan管理内存的最小单位是页面，而页面的大小不一定是size class大小的倍数，这会导致一些内存被浪费
-> 
+>
 > 例如下图中一个mspan划分成若干个slot用于分配，但是mspan占用页面的大小不能被slot的大小整除，所以有一个tail waste
 
 ![stack demo](./images/1_1_8.png)
@@ -323,19 +335,26 @@ type mcentral struct {
 }
 ```
 
-#### 线程缓存 mcache
+##### mcentral的性能问题
 
 - mcentral 实际是中心索引，使用互斥锁保护
   - mcentral.go:119的cacheSpan()方法里调用了tryAcquire(s)方法，底层是通过atomic加锁实现
-  - 在高并并发场景下，锁竞争问题严重？
-- 参考协程GMP模型（P的本地队列），增加线程本地缓存
-  - 不需要全局的协程列表获取线程，在本地就可以获取
-  - 线程缓存mcache
-    - 每个P拥有一个mcache
-    - 一个mcache拥有136个mspan
-      - mcentral中每种（级别、GC扫描类型）span取一个组成mcache分配给线程
-      - 68个需要GC扫描的mspan
-      - 68个不需要GC扫描的mspan
+  - 在高并并发场景下，锁竞争问题严重
+
+
+
+#### 线程缓存 mcache
+
+> 参考协程GMP模型（P的本地队列），增加线程本地缓存
+- 
+- 不需要全局的协程列表获取线程，在本地就可以获取
+- 线程缓存mcache
+  - 每个P拥有一个mcache
+  - 一个mcache拥有136个mspan
+    - mcentral中每种（级别、GC扫描类型）span取一个组成mcache分配给线程
+    - 68个需要GC扫描的mspan
+    - 68个不需要GC扫描的mspan
+    - 满了则会和中心索引进行交换
 
 ![stack demo](./images/1_1_10.png)
 
@@ -385,7 +404,7 @@ type mcache struct {
 
 #### 微对象分配
 
-> 从mcache拿到2级mspan，将多个微对象合并成一个16Bytes存入
+> 从mcache拿到2级mspan，将多个微对象合并成一个16Bytes存入（class2 是由512个16B的对象组成）
 
 ![stack demo](./images/1_1_11.png)
 
@@ -600,12 +619,12 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 - 因为Go堆内存结构的独特优势（分级span），选择最简单的“标记-清除”算法
 - 找到有引用的对象，剩下的就是没有引用的
 
-
 #### Root Set（GC Root）
 
 ##### 被栈上的指针引用
 
 > 间接、直接使用都会生效
+
 ```go
 package main
 
@@ -624,13 +643,14 @@ func main()  {
   print(p)
 }
 ```
+
 ##### 被全局变量指针引用
 
 > const 定义的变量不会被清除
 
 ##### 被寄存器中的指针引用（CPU正在操作的指针）
 
-> CPU 正在操作的变量，不会被清除 
+> CPU 正在操作的变量，不会被清除
 
 #### 串行GC步骤（v1.3及之前，v1.4加入写屏障）
 
@@ -658,15 +678,12 @@ func main()  {
 1. 把所有的对象标记为白色
 
    ![sign_0](./images/1_1_15_1.png)
-
 2. 把程序根结点集合RootSet里的对象标记为灰色
 
    ![sign_1](./images/1_1_15_2.png)
-
 3. 遍历标记为灰色的对象，找到关联的对象并标记为灰色，同时把自己标记为黑色
 
    ![sign_2](./images/1_1_15_3.png)
-
 4. 重复此步骤，直到只剩下 黑色 和 白色
 
    ![sign_3](./images/1_1_15_4.png)
@@ -679,11 +696,9 @@ func main()  {
 
 > 并发标记时，对指针新指向的白色对象置灰
 
-
 #### GC历程
 
 ![GC_history](./images/1_1_16.jpg)
-
 
 ### 优化GC效率
 
@@ -735,18 +750,19 @@ var forcegcperiod int64 = 2 * 60 * 1e9 // 强制GC周期
 - 空结构体指向一个固定地址
 - 没有长度不占用内存空间
 - 比如channel传递空结构体
+
   ```go
   // 不关心内容，只需要传递信号
   ch := make(chan struct{})
-  
+
   ch <- struct{}{}
   ```
-
 - 比如map不需要值的时候用hashSet，而不是hashMap
+
   ```go
   // HashSet
   demo1 := make(map[string]struct{}) // 这里只关心键，一般用于判断键是否唯一
-  
+
   // HashMap
   demo2 := make(map[string]string) // key → value 的常规用法
   ```
@@ -758,6 +774,7 @@ var forcegcperiod int64 = 2 * 60 * 1e9 // 强制GC周期
 - go build -gcflags="-m"
   - GODEBUG="gctrace=1" （简单粗暴）
     - 1.设置环境变量
+
       - windows
         ```shell
         $env:GODEBUG="gctrace=1"
@@ -767,19 +784,22 @@ var forcegcperiod int64 = 2 * 60 * 1e9 // 强制GC周期
         export GODEBUG="gctrace=1"
         ```
     - 2.运行程序
+
       ```shell
       go run gc.go
       ```
     - 3.查看控制台打印的GC情况
+
       ```
       gc 1 @0.010s 2%: 0+1.7+0 ms clock, 0+1.1/1.1/2.2+0 ms cpu, 4->5->5 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 8 P
       gc 2 @0.013s 3%: 0+2.1+0 ms clock, 0+0/2.6/2.6+0 ms cpu, 14->14->14 MB, 11 MB goal, 0 MB stacks, 0 MB globals, 8 P
       ```
+
       - gc 1                  第1次GC
       - @0.013s               程序启动到GC标记完成的时间
       - 3%                    程序从启动到现在，GC标记工作的CPU使用占比（不超过10%）
       - 0+2.1+0 ms clock      0表示mark阶段的STW时间（单P的）；2.1表示并发标记用的时间（所有P的）；0表示标记完成阶段的STW时间（单P的）
-      - 0+0/2.6/2.6+0 ms cpu  
+      - 0+0/2.6/2.6+0 ms cpu
       - 14->14->14 MB         GC 开始、过程、结束的内存变化
       - 11 MB goal            表示下一次触发GC的内存占用阀值是11MB
       - 0 MB stacks
